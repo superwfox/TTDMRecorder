@@ -117,9 +117,33 @@ void function TTDMStats_OnMatchFinished()
 string function TTDMStats_GetTimestamp()
 {
     int unixTime = GetUnixTimestamp()
-    int hours = ( unixTime / 3600 ) % 24
     int minutes = ( unixTime / 60 ) % 60
-    return format( "%02d-%02d", hours, minutes )
+    int hours = ( unixTime / 3600 ) % 24
+    int days = unixTime / 86400
+    int year = 1970
+    while ( true )
+    {
+        int daysInYear = 365
+        if ( year % 4 == 0 && ( year % 100 != 0 || year % 400 == 0 ) )
+            daysInYear = 366
+        if ( days < daysInYear )
+            break
+        days -= daysInYear
+        year++
+    }
+    array<int> monthDays = [ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 ]
+    if ( year % 4 == 0 && ( year % 100 != 0 || year % 400 == 0 ) )
+        monthDays[1] = 29
+    int month = 1
+    for ( int i = 0; i < 12; i++ )
+    {
+        if ( days < monthDays[i] )
+            break
+        days -= monthDays[i]
+        month++
+    }
+    int day = days + 1
+    return format( "%04d-%02d-%02d_%02d-%02d", year, month, day, hours, minutes )
 }
 
 void function TTDMStats_TryStartRecording()
