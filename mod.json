@@ -1,0 +1,15 @@
+{
+  "Name": "BeijiFox.TTDMRecorder",
+  "Description": "Track TTDM damage, kills and deaths for debugging",
+  "Version": "0.0.5",
+  "LoadPriority": 1,
+  "Scripts": [
+    {
+      "Path": "mp/_ttdm_stats_logger.nut",
+      "RunOn": "CLIENT && MP",
+      "ClientCallback": {
+        "Before": "TTDMStats_Init"
+      }
+    }
+  ]
+}

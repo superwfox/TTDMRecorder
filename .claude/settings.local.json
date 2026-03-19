@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.northstar.tf)",
+      "WebSearch",
+      "WebFetch(domain:r2northstar.readthedocs.io)"
+    ]
+  }
+}
