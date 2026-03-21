@@ -23,6 +23,9 @@ struct {
 void function TTDMStats_Init()
 {
     printt("[TTDMStats] CLIENT init fired")
+    // 确保 save_data 目录存在
+    if ( !NSDoesFileExist( ".ttdm_init" ) )
+        NSSaveFile( ".ttdm_init", "" )
     thread TTDMStats_UploadLeftovers()
     AddCallback_OnClientScriptInit( TTDMStats_OnClientReady )
     AddCallback_GameStateEnter( eGameState.Prematch, TTDMStats_OnPrematch )
