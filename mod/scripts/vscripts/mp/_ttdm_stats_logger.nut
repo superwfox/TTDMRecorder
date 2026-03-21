@@ -23,7 +23,6 @@ struct {
 void function TTDMStats_Init()
 {
     printt("[TTDMStats] CLIENT init fired")
-    // 确保 save_data 目录存在
     if ( !NSDoesFileExist( ".ttdm_init" ) )
         NSSaveFile( ".ttdm_init", "" )
     thread TTDMStats_UploadLeftovers()
@@ -177,7 +176,7 @@ void function TTDMStats_TryStartRecording()
     file.matchKey = format( "%s_%s", playerName, timestamp )
     file.samplePath = file.matchKey + "_timeline.csv"
     file.summaryPath = file.matchKey + "_players.csv"
-    file.sampleCsv = "SampleNum,health,titanType\n"
+    file.sampleCsv = "SampleNum,health,titanType,isDoomed\n"
     file.sampleCount = 0
     file.lastSampleAt = 0.0
 
@@ -207,6 +206,18 @@ void function TTDMStats_LogChanges( entity player )
     }
 }
 
+bool function TTDMStats_IsDoomed( entity player )
+{
+    if ( !player.IsTitan() )
+        return false
+
+    entity soul = player.GetTitanSoul()
+    if ( !IsValid( soul ) )
+        return false
+
+    return IsValid( soul ) && GetDoomedState( player )
+}
+
 void function TTDMStats_RecordSample( entity player )
 {
     float now = Time()
@@ -215,14 +226,18 @@ void function TTDMStats_RecordSample( entity player )
 
     file.lastSampleAt = now
     file.sampleCount++
+
+    bool doomed = TTDMStats_IsDoomed( player )
+
     file.sampleCsv += format(
-        "%d,%d,%s\n",
+        "%d,%d,%s,%d\n",
         file.sampleCount,
         player.GetHealth(),
-        TTDMStats_GetTitanType( player )
+        TTDMStats_GetTitanType( player ),
+        doomed ? 1 : 0
     )
 
-    if ( file.sampleCount % 2 == 0 )
+    if ( file.sampleCount % 20 == 0 )
         NSSaveFile( file.samplePath, file.sampleCsv )
 }
 
@@ -288,12 +303,10 @@ void function TTDMStats_SaveMatch()
 
 void function TTDMStats_UploadLeftovers()
 {
-    // 等待一帧确保引擎就绪
     wait 1.0
 
     array<string> allFiles = NSGetAllFiles( "" )
 
-    // 按 matchKey 分组: key -> { players = "", timeline = "" }
     table< string, table< string, string > > groups = {}
 
     foreach ( string filename in allFiles )
@@ -322,7 +335,6 @@ void function TTDMStats_UploadLeftovers()
         string playersFile = pair["players"]
         string timelineFile = pair["timeline"]
 
-        // 残缺记录：只有一个文件，直接删除
         if ( playersFile == "" || timelineFile == "" )
         {
             if ( playersFile != "" )
@@ -338,10 +350,8 @@ void function TTDMStats_UploadLeftovers()
             continue
         }
 
-        // 完整记录：读取内容并上传
         printt("[TTDMStats] found leftover pair:", playersFile, timelineFile)
         thread TTDMStats_UploadLeftoverPair( playersFile, timelineFile )
-        // 串行等待，避免并发冲突
         while ( NSDoesFileExist( playersFile ) )
             wait 1.0
     }
@@ -382,7 +392,6 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
         }
     )
 
-    // Wait for both loads to complete
     float deadline = Time() + 5.0
     while ( !( state.playersLoaded || state.playersFailed ) || !( state.timelineLoaded || state.timelineFailed ) )
     {
@@ -399,7 +408,6 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
         return
     }
 
-    // 复用上传逻辑
     file.summaryPath = playersFile
     file.samplePath = timelineFile
     file.summaryCsv = expect string( state.playersCsv )
@@ -439,6 +447,128 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
     TTDMStats_ShowHudMessage( "TTDM 历史数据上传失败", playersFile )
 }
 
+// ── Signing & Encoding ──────────────────────────────────────────
+
+// Key fragments — combined at runtime, never stored as single value
+const int _TTDM_KA = 0x5A3C
+const int _TTDM_KB = 0x7F12
+const int _TTDM_KC = 0x4E8D
+const int _TTDM_KD = 0xA1B7
+
+int function _TTDMDeriveKey()
+{
+    return ((_TTDM_KA << 16) | _TTDM_KB) ^ ((_TTDM_KC << 16) | _TTDM_KD)
+}
+
+// MurmurHash-inspired hash, must match server JS exactly
+// Squirrel integers are 32-bit signed; we use bitand 0x7FFFFFFF where needed
+// but ultimately the hex output must match JS's >>> 0
+int function _TTDMHash( string str, int seed )
+{
+    int h = seed
+    for ( int i = 0; i < str.len(); i++ )
+    {
+        h = h ^ str[i]
+        // Multiply by 0x5bd1e995 — use split multiply to avoid overflow issues
+        // h = h * 0x5bd1e995  (Squirrel handles 32-bit wrap natively)
+        h = h * 0x5bd1e995
+        h = h ^ ( (h >>> 15) & 0x1FFFF )
+    }
+    h = h * 0x27d4eb2d
+    h = h ^ ( (h >>> 13) & 0x7FFFF )
+    return h
+}
+
+string function _TTDMIntToHex( int val )
+{
+    // Convert to unsigned hex string matching JS (>>> 0).toString(16)
+    string result = ""
+    // Process as unsigned: treat negative as val + 2^32
+    int remaining = val
+    if ( remaining == 0 )
+        return "0"
+
+    string hexchars = "0123456789abcdef"
+    // Extract 8 hex digits (32 bits)
+    array<string> digits = []
+    for ( int i = 0; i < 8; i++ )
+    {
+        int nibble = remaining & 0xF
+        digits.insert( 0, hexchars.slice( nibble, nibble + 1 ) )
+        remaining = (remaining >>> 4) & 0x0FFFFFFF
+    }
+
+    result = ""
+    foreach ( string d in digits )
+        result += d
+
+    // Strip leading zeros
+    int start = 0
+    while ( start < result.len() - 1 && result[start] == '0' )
+        start++
+
+    return result.slice( start )
+}
+
+string function _TTDMComputeSig( string payload, int ts )
+{
+    int key = _TTDMDeriveKey()
+    int h1 = _TTDMHash( payload, key )
+    int h2 = _TTDMHash( "" + ts, h1 )
+    int sigVal = h2 ^ key
+    return _TTDMIntToHex( sigVal )
+}
+
+// XOR encode + Base64
+string function _TTDMXorEncode( string input )
+{
+    int key = _TTDMDeriveKey()
+    string encoded = ""
+    for ( int i = 0; i < input.len(); i++ )
+    {
+        int shift = (i % 4) * 8
+        int k = (key >>> shift) & 0xFF
+        int c = input[i] ^ k
+        encoded += format( "%c", c )
+    }
+    return _TTDMBase64Encode( encoded )
+}
+
+// Minimal Base64 encoder
+string function _TTDMBase64Encode( string input )
+{
+    string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    string result = ""
+    int i = 0
+    int len = input.len()
+
+    while ( i < len )
+    {
+        int b0 = input[i] & 0xFF
+        int b1 = (i + 1 < len) ? (input[i + 1] & 0xFF) : 0
+        int b2 = (i + 2 < len) ? (input[i + 2] & 0xFF) : 0
+
+        int triple = (b0 << 16) | (b1 << 8) | b2
+
+        result += chars.slice( (triple >>> 18) & 0x3F, ((triple >>> 18) & 0x3F) + 1 )
+        result += chars.slice( (triple >>> 12) & 0x3F, ((triple >>> 12) & 0x3F) + 1 )
+
+        if ( i + 1 < len )
+            result += chars.slice( (triple >>> 6) & 0x3F, ((triple >>> 6) & 0x3F) + 1 )
+        else
+            result += "="
+
+        if ( i + 2 < len )
+            result += chars.slice( triple & 0x3F, (triple & 0x3F) + 1 )
+        else
+            result += "="
+
+        i += 3
+    }
+
+    return result
+}
+
 // ── Upload ──────────────────────────────────────────────────────
 
 const string TTDM_UPLOAD_URL = "https://ttdm-review.pages.dev/api/upload"
@@ -461,7 +591,6 @@ void function TTDMStats_UploadWithRetry()
             continue
         }
 
-        // 等待异步回调，最多10秒
         float deadline = Time() + 10.0
         while ( !file.uploaded && Time() < deadline )
             wait 0.5
@@ -483,20 +612,86 @@ void function TTDMStats_UploadWithRetry()
     TTDMStats_ShowHudMessage( "TTDM 数据上传失败", "已重试" + TTDM_MAX_RETRIES + "次" )
 }
 
+// Titan type name -> index mapping, must match server TITAN_TYPES array
+int function _TTDMTitanIndex( string name )
+{
+    if ( name == "pilot" )     return 0
+    if ( name == "legion" )    return 1
+    if ( name == "ronin" )     return 2
+    if ( name == "northstar" ) return 3
+    if ( name == "scorch" )    return 4
+    if ( name == "tone" )      return 5
+    if ( name == "monarch" )   return 6
+    if ( name == "ion" )       return 7
+    return 8 // unknown
+}
+
+// Pack timeline CSV into binary (7 bytes per sample) then Base64 encode
+string function _TTDMPackTimeline( string csv )
+{
+    string raw = ""
+    array<string> lines = split( csv, "\n" )
+    // Skip header line (index 0)
+    for ( int i = 1; i < lines.len(); i++ )
+    {
+        string line = strip( lines[i] )
+        if ( line == "" )
+            continue
+
+        array<string> cols = split( line, "," )
+        if ( cols.len() < 4 )
+            continue
+
+        int sampleNum = cols[0].tointeger()
+        int health = cols[1].tointeger()
+        int titanIdx = _TTDMTitanIndex( strip( cols[2] ) )
+        int doomed = strip( cols[3] ).tointeger()
+
+        // 7 bytes: sampleNum(2 LE), health(2 LE), titanIdx(1), doomed(1), reserved(1)
+        raw += format( "%c%c%c%c%c%c%c",
+            sampleNum & 0xFF, (sampleNum >>> 8) & 0xFF,
+            health & 0xFF, (health >>> 8) & 0xFF,
+            titanIdx & 0xFF,
+            doomed & 0xFF,
+            0
+        )
+    }
+    return _TTDMBase64Encode( raw )
+}
+
 bool function TTDMStats_DoUpload()
 {
-    table payload = {
+    // Pack timeline to binary
+    string timelineBin = _TTDMPackTimeline( file.sampleCsv )
+
+    // Build inner payload as JSON string
+    table innerPayload = {
         players_filename = file.summaryPath,
         timeline_filename = file.samplePath,
         players_csv = file.summaryCsv,
-        timeline_csv = file.sampleCsv
+        timeline_bin = timelineBin
+    }
+    string innerJson = EncodeJSON( innerPayload )
+
+    // XOR encode the inner payload
+    string encodedPayload = _TTDMXorEncode( innerJson )
+
+    // Generate signature
+    int ts = GetUnixTimestamp()
+    string sig = _TTDMComputeSig( encodedPayload, ts )
+
+    // Build outer envelope
+    table envelope = {
+        sig = sig,
+        ts = ts,
+        payload = encodedPayload
     }
 
     HttpRequest request
     request.method = HttpRequestMethod.POST
     request.url = TTDM_UPLOAD_URL
     request.headers["Content-Type"] <- [ "application/json" ]
-    request.body = EncodeJSON( payload )
+    request.body = EncodeJSON( envelope )
 
     return NSHttpRequest( request,
         void function( HttpRequestResponse response )

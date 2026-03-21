@@ -1,7 +1,7 @@
 {
   "Name": "BeijiFox.TTDMRecorder",
   "Description": "Track TTDM damage, kills and deaths for debugging",
-  "Version": "1.0.0",
+  "Version": "1.0.3",
   "LoadPriority": 1,
   "Scripts": [
     {

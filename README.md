@@ -8,6 +8,10 @@ Automatically records Titan Team Deathmatch (TTDM) match data and uploads it to 
 
 ---
 
+- 本项目为公益项目，介于部分用户 （例如 绘之音..） 恶意填塞脏数据，短时间内过分请求，导致资源紧张，网站瘫痪，故不再公开API接口
+
+- This project is a totally non-profit project. Due to some users (such as 绘之音..) maliciously filling in dirty data, excessive requests in a short period of time, causing resource shortage and the website to crash, the API interface will no longer be publicly available.
+
 ## 功能 / Features
 
 - 自动检测 TTDM 模式，进入对局后开始录制
@@ -45,40 +49,6 @@ Automatically records Titan Team Deathmatch (TTDM) match data and uploads it to 
 对局数据保存在 `R2Northstar/save_data/` 目录下，文件名格式：
 
 Match data is saved under `R2Northstar/save_data/`, filename format:
-
-```
-{玩家名}_{时间戳}_players.csv    — 所有玩家结算数据 / all players' end-game stats
-{玩家名}_{时间戳}_timeline.csv   — 血量与泰坦采样 / health & titan type samples
-```
-
-### Players CSV
-
-```csv
-name,kills,deaths,damage
-SudarkO,6,3,81776
-Player2,8,2,30981
-```
-
-### Timeline CSV
-
-```csv
-SampleNum,health,titanType
-1,25,pilot
-30,25,legion
-36,12500,legion
-```
-
-## 上传 API / Upload API
-
-数据自动上传至 `https://ttdm-review.pages.dev/api/upload`。
-
-可通过 `https://ttdm-review.pages.dev/api/query?name={玩家名}` 查询历史对局。
-
----
-
-Data is auto-uploaded to `https://ttdm-review.pages.dev/api/upload`.
-
-Query match history at `https://ttdm-review.pages.dev/api/query?name={playerName}`.
 
 ## 依赖 / Requirements
 

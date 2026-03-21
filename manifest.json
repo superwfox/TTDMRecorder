@@ -1,6 +1,6 @@
 {
   "name": "TTDMRecorder",
-  "version_number": "1.0.0",
+  "version_number": "1.0.3",
   "website_url": "https://github.com/superwfox/ttdm-review",
   "description": "Automatically records TTDM match data (kills, deaths, damage, health timeline) and uploads to ttdm-review.",
   "dependencies": [
