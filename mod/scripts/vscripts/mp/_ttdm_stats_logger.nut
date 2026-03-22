@@ -16,8 +16,7 @@ struct {
     int lastDeaths = 0
     float lastSampleAt = 0.0
     string summaryCsv = ""
-    int uploadRetries = 0
-    bool uploaded = false
+    string uploadStartedKey = ""
 } file
 
 void function TTDMStats_Init()
@@ -76,8 +75,6 @@ void function TTDMStats_ResetState( entity player )
     file.summaryCsv = ""
     file.sampleCount = 0
     file.lastSampleAt = 0.0
-    file.uploadRetries = 0
-    file.uploaded = false
     file.lastDamage = player.GetPlayerGameStat( PGS_ASSAULT_SCORE )
     file.lastKills = player.GetPlayerGameStat( PGS_KILLS )
     file.lastDeaths = player.GetPlayerGameStat( PGS_DEATHS )
@@ -121,13 +118,20 @@ void function TTDMStats_OnPlaying()
 void function TTDMStats_OnMatchFinished()
 {
     TTDMStats_SaveMatch()
-    if ( file.saved && !file.uploaded )
-        thread TTDMStats_UploadWithRetry()
+    if ( !file.saved )
+        return
+
+    if ( file.uploadStartedKey == file.matchKey )
+        return
+
+    file.uploadStartedKey = file.matchKey
+    thread TTDMStats_UploadWithRetry( file.matchKey, file.samplePath, file.summaryPath, file.sampleCsv, file.summaryCsv )
 }
 
 string function TTDMStats_GetTimestamp()
 {
     int unixTime = GetUnixTimestamp()
+    int seconds = unixTime % 60
     int minutes = ( unixTime / 60 ) % 60
     int hours = ( unixTime / 3600 ) % 24
     int days = unixTime / 86400
@@ -154,7 +158,68 @@ string function TTDMStats_GetTimestamp()
         month++
     }
     int day = days + 1
-    return format( "%04d-%02d-%02d_%02d-%02d", year, month, day, hours, minutes )
+    return format( "%04d-%02d-%02d_%02d-%02d-%02d", year, month, day, hours, minutes, seconds )
+}
+
+string function TTDMStats_SanitizeFilePart( string value )
+{
+    string result = ""
+    for ( int i = 0; i < value.len(); i++ )
+    {
+        int ch = expect int( value[i] )
+        if (
+            ch < 32 ||
+            ch == '/' ||
+            ch == '\\' ||
+            ch == ':' ||
+            ch == '*' ||
+            ch == '?' ||
+            ch == '"' ||
+            ch == '<' ||
+            ch == '>' ||
+            ch == '|' ||
+            ch == '\r' ||
+            ch == '\n' ||
+            ch == '\t'
+        )
+        {
+            result += "_"
+            continue
+        }
+
+        result += format( "%c", ch )
+    }
+
+    if ( result == "" || result == "." || result == ".." )
+        return "player"
+
+    return result
+}
+
+string function TTDMStats_CsvEscape( string value )
+{
+    bool needsQuotes = false
+    string result = ""
+    for ( int i = 0; i < value.len(); i++ )
+    {
+        int ch = expect int( value[i] )
+        if ( ch == '"' )
+        {
+            result += "\"\""
+            needsQuotes = true
+            continue
+        }
+
+        if ( ch == ',' || ch == '\r' || ch == '\n' )
+            needsQuotes = true
+
+        result += format( "%c", ch )
+    }
+
+    if ( needsQuotes )
+        return "\"" + result + "\""
+
+    return result
 }
 
 void function TTDMStats_TryStartRecording()
@@ -172,7 +237,7 @@ void function TTDMStats_TryStartRecording()
     file.recording = true
     file.saved = false
     string timestamp = TTDMStats_GetTimestamp()
-    string playerName = player.GetPlayerName()
+    string playerName = TTDMStats_SanitizeFilePart( player.GetPlayerName() )
     file.matchKey = format( "%s_%s", playerName, timestamp )
     file.samplePath = file.matchKey + "_timeline.csv"
     file.summaryPath = file.matchKey + "_players.csv"
@@ -283,7 +348,7 @@ void function TTDMStats_SaveMatch()
 
         summaryCsv += format(
             "%s,%d,%d,%d\n",
-            player.GetPlayerName(),
+            TTDMStats_CsvEscape( player.GetPlayerName() ),
             player.GetPlayerGameStat( PGS_KILLS ),
             player.GetPlayerGameStat( PGS_DEATHS ),
             player.GetPlayerGameStat( PGS_ASSAULT_SCORE )
@@ -351,9 +416,7 @@ void function TTDMStats_UploadLeftovers()
         }
 
         printt("[TTDMStats] found leftover pair:", playersFile, timelineFile)
-        thread TTDMStats_UploadLeftoverPair( playersFile, timelineFile )
-        while ( NSDoesFileExist( playersFile ) )
-            wait 1.0
+        TTDMStats_UploadLeftoverPair( playersFile, timelineFile )
     }
 }
 
@@ -408,18 +471,15 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
         return
     }
 
-    file.summaryPath = playersFile
-    file.samplePath = timelineFile
-    file.summaryCsv = expect string( state.playersCsv )
-    file.sampleCsv = expect string( state.timelineCsv )
-    file.uploaded = false
+    string playersCsv = expect string( state.playersCsv )
+    string timelineCsv = expect string( state.timelineCsv )
 
     for ( int attempt = 1; attempt <= TTDM_MAX_RETRIES; attempt++ )
     {
-        file.uploaded = false
         printt("[TTDMStats] leftover upload attempt", attempt, "for", playersFile)
+        table uploadState = { uploaded = false }
 
-        bool started = TTDMStats_DoUpload()
+        bool started = TTDMStats_DoUpload( playersFile, timelineFile, playersCsv, timelineCsv, uploadState )
         if ( !started )
         {
             wait 3.0
@@ -427,15 +487,15 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
         }
 
         float deadline = Time() + 10.0
-        while ( !file.uploaded && Time() < deadline )
+        while ( !expect bool( uploadState.uploaded ) && Time() < deadline )
             wait 0.5
 
-        if ( file.uploaded )
+        if ( expect bool( uploadState.uploaded ) )
         {
             NSDeleteFile( playersFile )
             NSDeleteFile( timelineFile )
             printt("[TTDMStats] leftover uploaded and deleted:", playersFile)
-            TTDMStats_ShowHudMessage( "TTDM 历史数据上传成功", playersFile )
+            TTDMStats_ShowHudMessage( "TTDM 歷史資料上傳成功", playersFile )
             return
         }
 
@@ -444,7 +504,7 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
     }
 
     printt("[TTDMStats] leftover upload failed:", playersFile)
-    TTDMStats_ShowHudMessage( "TTDM 历史数据上传失败", playersFile )
+    TTDMStats_ShowHudMessage( "TTDM 歷史資料上傳失敗", playersFile )
 }
 
 // ── Signing & Encoding ──────────────────────────────────────────
@@ -468,7 +528,7 @@ int function _TTDMHash( string str, int seed )
     int h = seed
     for ( int i = 0; i < str.len(); i++ )
     {
-        h = h ^ str[i]
+        h = h ^ expect int( str[i] )
         // Multiply by 0x5bd1e995 — use split multiply to avoid overflow issues
         // h = h * 0x5bd1e995  (Squirrel handles 32-bit wrap natively)
         h = h * 0x5bd1e995
@@ -528,8 +588,7 @@ string function _TTDMXorEncode( string input )
     {
         int shift = (i % 4) * 8
         int k = (key >>> shift) & 0xFF
-        int c = input[i] ^ k
-        encoded += format( "%c", c )
+        encoded += format( "%c", expect int( input[i] ) ^ k )
     }
     return _TTDMBase64Encode( encoded )
 }
@@ -544,9 +603,15 @@ string function _TTDMBase64Encode( string input )
 
     while ( i < len )
     {
-        int b0 = input[i] & 0xFF
-        int b1 = (i + 1 < len) ? (input[i + 1] & 0xFF) : 0
-        int b2 = (i + 2 < len) ? (input[i + 2] & 0xFF) : 0
+        int b0 = expect int( input[i] ) & 0xFF
+        int b1 = 0
+        int b2 = 0
+
+        if ( i + 1 < len )
+            b1 = expect int( input[i + 1] ) & 0xFF
+
+        if ( i + 2 < len )
+            b2 = expect int( input[i + 2] ) & 0xFF
 
         int triple = (b0 << 16) | (b1 << 8) | b2
 
@@ -574,15 +639,13 @@ string function _TTDMBase64Encode( string input )
 const string TTDM_UPLOAD_URL = "https://ttdm-review.pages.dev/api/upload"
 const int    TTDM_MAX_RETRIES = 5
 
-void function TTDMStats_UploadWithRetry()
+void function TTDMStats_UploadWithRetry( string matchKey, string samplePath, string summaryPath, string sampleCsv, string summaryCsv )
 {
     for ( int attempt = 1; attempt <= TTDM_MAX_RETRIES; attempt++ )
     {
-        file.uploadRetries = attempt
-        file.uploaded = false
-
-        printt("[TTDMStats] upload attempt", attempt)
-        bool started = TTDMStats_DoUpload()
+        printt("[TTDMStats] upload attempt", attempt, "for", matchKey)
+        table uploadState = { uploaded = false }
+        bool started = TTDMStats_DoUpload( summaryPath, samplePath, summaryCsv, sampleCsv, uploadState )
 
         if ( !started )
         {
@@ -592,15 +655,15 @@ void function TTDMStats_UploadWithRetry()
         }
 
         float deadline = Time() + 10.0
-        while ( !file.uploaded && Time() < deadline )
+        while ( !expect bool( uploadState.uploaded ) && Time() < deadline )
             wait 0.5
 
-        if ( file.uploaded )
+        if ( expect bool( uploadState.uploaded ) )
         {
-            NSDeleteFile( file.samplePath )
-            NSDeleteFile( file.summaryPath )
+            NSDeleteFile( samplePath )
+            NSDeleteFile( summaryPath )
             printt("[TTDMStats] upload success, files deleted")
-            TTDMStats_ShowHudMessage( "TTDM 数据上传成功", "" )
+            TTDMStats_ShowHudMessage( "TTDM 資料上傳成功", "" )
             return
         }
 
@@ -609,7 +672,7 @@ void function TTDMStats_UploadWithRetry()
     }
 
     printt("[TTDMStats] upload failed after", TTDM_MAX_RETRIES, "attempts")
-    TTDMStats_ShowHudMessage( "TTDM 数据上传失败", "已重试" + TTDM_MAX_RETRIES + "次" )
+    TTDMStats_ShowHudMessage( "TTDM 資料上傳失敗", "已重試" + TTDM_MAX_RETRIES + "次" )
 }
 
 // Titan type name -> index mapping, must match server TITAN_TYPES array
@@ -659,16 +722,16 @@ string function _TTDMPackTimeline( string csv )
     return _TTDMBase64Encode( raw )
 }
 
-bool function TTDMStats_DoUpload()
+bool function TTDMStats_DoUpload( string summaryPath, string samplePath, string summaryCsv, string sampleCsv, table uploadState )
 {
     // Pack timeline to binary
-    string timelineBin = _TTDMPackTimeline( file.sampleCsv )
+    string timelineBin = _TTDMPackTimeline( sampleCsv )
 
     // Build inner payload as JSON string
     table innerPayload = {
-        players_filename = file.summaryPath,
-        timeline_filename = file.samplePath,
-        players_csv = file.summaryCsv,
+        players_filename = summaryPath,
+        timeline_filename = samplePath,
+        players_csv = summaryCsv,
         timeline_bin = timelineBin
     }
     string innerJson = EncodeJSON( innerPayload )
@@ -694,14 +757,14 @@ bool function TTDMStats_DoUpload()
     request.body = EncodeJSON( envelope )
 
     return NSHttpRequest( request,
-        void function( HttpRequestResponse response )
+        void function( HttpRequestResponse response ) : ( uploadState )
         {
             if ( NSIsSuccessHttpCode( response.statusCode ) )
             {
                 table result = DecodeJSON( response.body )
                 if ( "ok" in result && result["ok"] == true )
                 {
-                    file.uploaded = true
+                    uploadState.uploaded = true
                     printt("[TTDMStats] server accepted upload, match_id =", ( "match_id" in result ? result["match_id"] : "?" ))
                     return
                 }
