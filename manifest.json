@@ -1,7 +1,7 @@
 {
   "name": "TTDMRecorder",
-  "version_number": "2.0.1",
-  "website_url": "https://github.com/superwfox/ttdm-review",
+  "version_number": "3.0.0",
+  "website_url": "https://github.com/superwfox/TTDMRecorder",
   "description": "Automatically records TTDM match data (kills, deaths, damage, health timeline) and uploads to ttdm-review.",
   "dependencies": [
     "northstar-Northstar-1.9.0"

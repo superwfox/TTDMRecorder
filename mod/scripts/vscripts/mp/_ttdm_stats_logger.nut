@@ -1,22 +1,32 @@
 global function TTDMStats_Init
 
 struct {
+    // ── State flags ──
     bool enabled = false
     bool announced = false
     bool running = false
     bool recording = false
     bool saved = false
+
+    // ── Match identifiers & file paths ──
     string matchKey = ""
     string samplePath = ""
     string summaryPath = ""
-    string sampleCsv = ""
+    string uploadStartedKey = ""
+
+    // ── Timeline sampling ──
+    string sampleDat = ""
     int sampleCount = 0
+    float lastSampleAt = 0.0
+
+    // ── Delta accumulation (written into each sample) ──
     int lastDamage = 0
     int lastKills = 0
-    int lastDeaths = 0
-    float lastSampleAt = 0.0
-    string summaryCsv = ""
-    string uploadStartedKey = ""
+    int pendingDeltaDamage = 0
+    int pendingDeltaKills = 0
+
+    // ── Summary ──
+    string summaryDat = ""
 } file
 
 void function TTDMStats_Init()
@@ -55,7 +65,7 @@ void function TTDMStats_MonitorThread()
         TTDMStats_UpdateMode( player )
         if ( file.recording )
         {
-            TTDMStats_LogChanges( player )
+            TTDMStats_AccumulateDeltas( player )
             TTDMStats_RecordSample( player )
         }
 
@@ -71,13 +81,14 @@ void function TTDMStats_ResetState( entity player )
     file.matchKey = ""
     file.samplePath = ""
     file.summaryPath = ""
-    file.sampleCsv = ""
-    file.summaryCsv = ""
+    file.sampleDat = ""
+    file.summaryDat = ""
     file.sampleCount = 0
     file.lastSampleAt = 0.0
+    file.pendingDeltaDamage = 0
+    file.pendingDeltaKills = 0
     file.lastDamage = player.GetPlayerGameStat( PGS_ASSAULT_SCORE )
     file.lastKills = player.GetPlayerGameStat( PGS_KILLS )
-    file.lastDeaths = player.GetPlayerGameStat( PGS_DEATHS )
 }
 
 void function TTDMStats_UpdateMode( entity player )
@@ -100,9 +111,8 @@ void function TTDMStats_UpdateMode( entity player )
     file.announced = true
     file.lastDamage = player.GetPlayerGameStat( PGS_ASSAULT_SCORE )
     file.lastKills = player.GetPlayerGameStat( PGS_KILLS )
-    file.lastDeaths = player.GetPlayerGameStat( PGS_DEATHS )
 
-    printt("[TTDMStats] mode =", mode, " baseline damage =", file.lastDamage, " kills =", file.lastKills, " deaths =", file.lastDeaths)
+    printt("[TTDMStats] mode =", mode, " baseline damage =", file.lastDamage, " kills =", file.lastKills)
 }
 
 void function TTDMStats_OnPrematch()
@@ -125,7 +135,7 @@ void function TTDMStats_OnMatchFinished()
         return
 
     file.uploadStartedKey = file.matchKey
-    thread TTDMStats_UploadWithRetry( file.matchKey, file.samplePath, file.summaryPath, file.sampleCsv, file.summaryCsv )
+    thread TTDMStats_UploadWithRetry( file.matchKey, file.samplePath, file.summaryPath, file.sampleDat, file.summaryDat )
 }
 
 string function TTDMStats_GetTimestamp()
@@ -239,35 +249,27 @@ void function TTDMStats_TryStartRecording()
     string timestamp = TTDMStats_GetTimestamp()
     string playerName = TTDMStats_SanitizeFilePart( player.GetPlayerName() )
     file.matchKey = format( "%s_%s", playerName, timestamp )
-    file.samplePath = file.matchKey + "_timeline.csv"
-    file.summaryPath = file.matchKey + "_players.csv"
-    file.sampleCsv = "SampleNum,health,titanType,isDoomed\n"
+    file.samplePath = file.matchKey + "_timeline.dat"
+    file.summaryPath = file.matchKey + "_players.dat"
+    file.sampleDat = "SampleNum,health,titanType,isDoomed,deltaDamage,deltaKills\n"
     file.sampleCount = 0
     file.lastSampleAt = 0.0
 
     printt("[TTDMStats] recording started =", file.matchKey)
 }
 
-void function TTDMStats_LogChanges( entity player )
+void function TTDMStats_AccumulateDeltas( entity player )
 {
     int damage = player.GetPlayerGameStat( PGS_ASSAULT_SCORE )
     int kills = player.GetPlayerGameStat( PGS_KILLS )
-    int deaths = player.GetPlayerGameStat( PGS_DEATHS )
 
-    if ( damage != file.lastDamage || kills != file.lastKills || deaths != file.lastDeaths )
+    if ( damage != file.lastDamage || kills != file.lastKills )
     {
-        printt(
-            "[TTDMStats] damage =", damage,
-            " kills =", kills,
-            " deaths =", deaths,
-            " deltaDamage =", damage - file.lastDamage,
-            " deltaKills =", kills - file.lastKills,
-            " deltaDeaths =", deaths - file.lastDeaths
-        )
+        file.pendingDeltaDamage += damage - file.lastDamage
+        file.pendingDeltaKills += kills - file.lastKills
 
         file.lastDamage = damage
         file.lastKills = kills
-        file.lastDeaths = deaths
     }
 }
 
@@ -280,7 +282,7 @@ bool function TTDMStats_IsDoomed( entity player )
     if ( !IsValid( soul ) )
         return false
 
-    return IsValid( soul ) && GetDoomedState( player )
+    return GetDoomedState( player )
 }
 
 void function TTDMStats_RecordSample( entity player )
@@ -294,16 +296,21 @@ void function TTDMStats_RecordSample( entity player )
 
     bool doomed = TTDMStats_IsDoomed( player )
 
-    file.sampleCsv += format(
-        "%d,%d,%s,%d\n",
+    file.sampleDat += format(
+        "%d,%d,%s,%d,%d,%d\n",
         file.sampleCount,
         player.GetHealth(),
         TTDMStats_GetTitanType( player ),
-        doomed ? 1 : 0
+        doomed ? 1 : 0,
+        file.pendingDeltaDamage,
+        file.pendingDeltaKills
     )
 
+    file.pendingDeltaDamage = 0
+    file.pendingDeltaKills = 0
+
     if ( file.sampleCount % 20 == 0 )
-        NSSaveFile( file.samplePath, file.sampleCsv )
+        NSSaveFile( file.samplePath, file.sampleDat )
 }
 
 string function TTDMStats_GetTitanType( entity player )
@@ -337,7 +344,7 @@ void function TTDMStats_SaveMatch()
     if ( !IsValid( localPlayer ) )
         return
 
-    string summaryCsv = "name,kills,deaths,damage\n"
+    string summaryDat = "name,kills,deaths,damage\n"
     foreach ( entity player in GetPlayerArray() )
     {
         if ( !IsValid( player ) )
@@ -346,7 +353,7 @@ void function TTDMStats_SaveMatch()
         if ( player.GetPlayerName() == "Replay" )
             continue
 
-        summaryCsv += format(
+        summaryDat += format(
             "%s,%d,%d,%d\n",
             TTDMStats_CsvEscape( player.GetPlayerName() ),
             player.GetPlayerGameStat( PGS_KILLS ),
@@ -355,9 +362,9 @@ void function TTDMStats_SaveMatch()
         )
     }
 
-    file.summaryCsv = summaryCsv
-    NSSaveFile( file.samplePath, file.sampleCsv )
-    NSSaveFile( file.summaryPath, summaryCsv )
+    file.summaryDat = summaryDat
+    NSSaveFile( file.samplePath, file.sampleDat )
+    NSSaveFile( file.summaryPath, summaryDat )
 
     file.saved = true
     file.recording = false
@@ -376,8 +383,8 @@ void function TTDMStats_UploadLeftovers()
 
     foreach ( string filename in allFiles )
     {
-        var playersFind = filename.find( "_players.csv" )
-        var timelineFind = filename.find( "_timeline.csv" )
+        var playersFind = filename.find( "_players.dat" )
+        var timelineFind = filename.find( "_timeline.dat" )
 
         if ( playersFind != null )
         {
@@ -423,8 +430,8 @@ void function TTDMStats_UploadLeftovers()
 void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineFile )
 {
     table state = {
-        playersCsv = "",
-        timelineCsv = "",
+        playersDat = "",
+        timelineDat = "",
         playersLoaded = false,
         timelineLoaded = false,
         playersFailed = false,
@@ -434,7 +441,7 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
     NSLoadFile( playersFile,
         void function( string data ) : ( state )
         {
-            state.playersCsv = data
+            state.playersDat = data
             state.playersLoaded = true
         },
         void function() : ( state )
@@ -446,7 +453,7 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
     NSLoadFile( timelineFile,
         void function( string data ) : ( state )
         {
-            state.timelineCsv = data
+            state.timelineDat = data
             state.timelineLoaded = true
         },
         void function() : ( state )
@@ -463,7 +470,7 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
         wait 0.1
     }
 
-    if ( state.playersFailed || state.timelineFailed || state.playersCsv == "" || state.timelineCsv == "" )
+    if ( state.playersFailed || state.timelineFailed || state.playersDat == "" || state.timelineDat == "" )
     {
         NSDeleteFile( playersFile )
         NSDeleteFile( timelineFile )
@@ -471,15 +478,15 @@ void function TTDMStats_UploadLeftoverPair( string playersFile, string timelineF
         return
     }
 
-    string playersCsv = expect string( state.playersCsv )
-    string timelineCsv = expect string( state.timelineCsv )
+    string playersDat = expect string( state.playersDat )
+    string timelineDat = expect string( state.timelineDat )
 
     for ( int attempt = 1; attempt <= TTDM_MAX_RETRIES; attempt++ )
     {
         printt("[TTDMStats] leftover upload attempt", attempt, "for", playersFile)
         table uploadState = { uploaded = false }
 
-        bool started = TTDMStats_DoUpload( playersFile, timelineFile, playersCsv, timelineCsv, uploadState )
+        bool started = TTDMStats_DoUpload( playersFile, timelineFile, playersDat, timelineDat, uploadState )
         if ( !started )
         {
             wait 3.0
@@ -637,15 +644,15 @@ string function _TTDMBase64Encode( string input )
 // ── Upload ──────────────────────────────────────────────────────
 
 const string TTDM_UPLOAD_URL = "https://ttdm-review.pages.dev/api/upload"
-const int    TTDM_MAX_RETRIES = 5
+const int    TTDM_MAX_RETRIES = 2
 
-void function TTDMStats_UploadWithRetry( string matchKey, string samplePath, string summaryPath, string sampleCsv, string summaryCsv )
+void function TTDMStats_UploadWithRetry( string matchKey, string samplePath, string summaryPath, string sampleDat, string summaryDat )
 {
     for ( int attempt = 1; attempt <= TTDM_MAX_RETRIES; attempt++ )
     {
         printt("[TTDMStats] upload attempt", attempt, "for", matchKey)
         table uploadState = { uploaded = false }
-        bool started = TTDMStats_DoUpload( summaryPath, samplePath, summaryCsv, sampleCsv, uploadState )
+        bool started = TTDMStats_DoUpload( summaryPath, samplePath, summaryDat, sampleDat, uploadState )
 
         if ( !started )
         {
@@ -689,7 +696,7 @@ int function _TTDMTitanIndex( string name )
     return 8 // unknown
 }
 
-// Pack timeline CSV into binary (7 bytes per sample) then Base64 encode
+// Pack timeline dat into binary (9 bytes per sample) then Base64 encode
 string function _TTDMPackTimeline( string csv )
 {
     string raw = ""
@@ -702,36 +709,39 @@ string function _TTDMPackTimeline( string csv )
             continue
 
         array<string> cols = split( line, "," )
-        if ( cols.len() < 4 )
+        if ( cols.len() < 6 )
             continue
 
         int sampleNum = cols[0].tointeger()
         int health = cols[1].tointeger()
         int titanIdx = _TTDMTitanIndex( strip( cols[2] ) )
         int doomed = strip( cols[3] ).tointeger()
+        int dDamage = cols[4].tointeger()
+        int dKills = cols[5].tointeger()
 
-        // 7 bytes: sampleNum(2 LE), health(2 LE), titanIdx(1), doomed(1), reserved(1)
-        raw += format( "%c%c%c%c%c%c%c",
+        // 9 bytes: sampleNum(2 LE), health(2 LE), titanIdx(1), doomed(1), deltaDamage(2 LE), deltaKills(1)
+        raw += format( "%c%c%c%c%c%c%c%c%c",
             sampleNum & 0xFF, (sampleNum >>> 8) & 0xFF,
             health & 0xFF, (health >>> 8) & 0xFF,
             titanIdx & 0xFF,
             doomed & 0xFF,
-            0
+            dDamage & 0xFF, (dDamage >>> 8) & 0xFF,
+            dKills & 0xFF
         )
     }
     return _TTDMBase64Encode( raw )
 }
 
-bool function TTDMStats_DoUpload( string summaryPath, string samplePath, string summaryCsv, string sampleCsv, table uploadState )
+bool function TTDMStats_DoUpload( string summaryPath, string samplePath, string summaryDat, string sampleDat, table uploadState )
 {
     // Pack timeline to binary
-    string timelineBin = _TTDMPackTimeline( sampleCsv )
+    string timelineBin = _TTDMPackTimeline( sampleDat )
 
     // Build inner payload as JSON string
     table innerPayload = {
         players_filename = summaryPath,
         timeline_filename = samplePath,
-        players_csv = summaryCsv,
+        players_csv = summaryDat,
         timeline_bin = timelineBin
     }
     string innerJson = EncodeJSON( innerPayload )
