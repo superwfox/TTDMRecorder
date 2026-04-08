@@ -1,7 +1,7 @@
 {
-  "Name": "BeijiFox.TTDMRecorder",
-  "Description": "Track TTDM damage, kills and deaths for debugging",
-  "Version": "3.0.0",
+  "Name": "TTDMRecorder",
+  "Description": "Track TTDM damage,deltaDamage, kills and deaths | 自動上傳您的TTDM對局數據至雲端服務器",
+  "Version": "3.0.3",
   "LoadPriority": 1,
   "Scripts": [
     {

@@ -32,8 +32,8 @@ struct {
 void function TTDMStats_Init()
 {
     printt("[TTDMStats] CLIENT init fired")
-    if ( !NSDoesFileExist( ".ttdm_init" ) )
-        NSSaveFile( ".ttdm_init", "" )
+    if ( !NSDoesFileExist( "ttdm_init.txt" ) )
+        NSSaveFile( "ttdm_init.txt", "" )
     thread TTDMStats_UploadLeftovers()
     AddCallback_OnClientScriptInit( TTDMStats_OnClientReady )
     AddCallback_GameStateEnter( eGameState.Prematch, TTDMStats_OnPrematch )
@@ -249,8 +249,8 @@ void function TTDMStats_TryStartRecording()
     string timestamp = TTDMStats_GetTimestamp()
     string playerName = TTDMStats_SanitizeFilePart( player.GetPlayerName() )
     file.matchKey = format( "%s_%s", playerName, timestamp )
-    file.samplePath = file.matchKey + "_timeline.dat"
-    file.summaryPath = file.matchKey + "_players.dat"
+    file.samplePath = file.matchKey + "_timeline.txt"
+    file.summaryPath = file.matchKey + "_players.txt"
     file.sampleDat = "SampleNum,health,titanType,isDoomed,deltaDamage,deltaKills\n"
     file.sampleCount = 0
     file.lastSampleAt = 0.0
@@ -383,8 +383,8 @@ void function TTDMStats_UploadLeftovers()
 
     foreach ( string filename in allFiles )
     {
-        var playersFind = filename.find( "_players.dat" )
-        var timelineFind = filename.find( "_timeline.dat" )
+        var playersFind = filename.find( "_players.txt" )
+        var timelineFind = filename.find( "_timeline.txt" )
 
         if ( playersFind != null )
         {
