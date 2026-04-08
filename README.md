@@ -7,7 +7,7 @@
 
 This mod will set 1200 sampling points in each TTDM match to record your `health`, `TitanType`,`kills`, and `DeltaDamage`, and encrypt and upload it to [ttdm-review](https://ttdm-review.pages.dev) or [ttdm.space](https://ttdm.space), where you can replay each game directly on this website. And the game will also upload other players' data, so welcome you to install this mod to enrich the replay data of TTDM.
 
-![Screenshot](https://raw.githubusercontent.com/superwfox/TTDMRecorder/master/screenshot.png)
+![alt text](image-1.png)
 
 - 本项目为公益项目，数据不会用于任何形式的商业用途，云端加密存储，请放心使用。
 
